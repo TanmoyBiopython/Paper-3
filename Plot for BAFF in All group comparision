@@ -1,0 +1,114 @@
+# install.packages(c("ggplot2", "dplyr", "scales", "rstatix"))
+library(ggplot2)
+library(dplyr)
+library(scales)
+library(rstatix)
+
+set.seed(42)
+
+# ---- Data ------------------------------------------------------------------
+gbs <- c(884.9212, 785.4461, 887.4596, 1237.2259, 2826.47, 777.224, 1675.7465, 138.328, 1433.0165, 813.6074, 1480.8543, 789.0592, 775.1824, 1064.1209, 1086.7312, 532.4036, 447.9911, 325.9601, 435.4836, 488.6353, 811.051, 1199.6218, 981.052, 998.6986, 996.1786, 1440.5646, 1903.8474)
+hc  <- c(731.4077, 831.4826, 829.8358, 817.2858, 485.509, 438.6106, 676.285, 463.6243, 485.509, 1128.583, 767.851, 793.623, 666.369, 751.243, 746.035, 669.403, 544.9094, 1125.7728, 936.6405, 1084.7167, 998.6986, 892.6327, 663.7658, 811.0119, 701.3296, 591.813, 607.4508, 908.3449, 852.097, 621.787, 1094.2647, 1395.3018, 1139.4383, 767.4759)
+ms  <- c(360.563, 308.281, 391.83, 404.807, 886.208, 304.333, 1210.829, 616.579, 579.954, 212.567, 791.53, 522.821, 245.074, 770.0456, 250.739, 554.423, 709.088, 425.152, 278.9382, 137.1578, 658.6733, 2547.403, 821.2723, 637.7208, 424.7901)
+sle <- c(1770.1465, 1086.7312, 539.719, 1420.4402, 1038.9787, 2413.7564, 1593.4996, 1246.0504, 2114.2542, 2291.1364, 401.0811, 9213.96, 939.7856, 1147.8988, 999.5859, 610.5786, 1065.7827, 2960.8391, 2477.667, 1214.3586, 968.1015, 673.1551, 2500.8181, 8337.604)
+
+grp_levels <- c("HC", "GBS", "MS", "SLE")
+baff_data <- data.frame(
+  Group      = factor(rep(c("GBS", "HC", "MS", "SLE"), c(length(gbs), length(hc), length(ms), length(sle))),
+                      levels = grp_levels),
+  BAFF_pg_ml = c(gbs, hc, ms, sle)
+)
+
+grp_cols <- c(HC = "#4E79A7", GBS = "#F28E2B", MS = "#E15759", SLE = "#59A14F")
+
+# ---- Summary ---------------------------------------------------------------
+summary_tbl <- baff_data %>%
+  group_by(Group) %>%
+  summarise(n = n(), median = median(BAFF_pg_ml),
+            Q1 = quantile(BAFF_pg_ml, 0.25), Q3 = quantile(BAFF_pg_ml, 0.75),
+            .groups = "drop")
+print(summary_tbl)
+
+# ---- Kruskal-Wallis (overall test) -----------------------------------------
+kw   <- kruskal.test(BAFF_pg_ml ~ Group, data = baff_data)
+kw_tbl <- data.frame(Cytokine   = "BAFF",
+                     N          = nrow(baff_data),
+                     H          = unname(kw$statistic),
+                     p_value    = kw$p.value,
+                     Conclusion = ifelse(kw$p.value < 0.05, "Significant", "Not significant"))
+print(kw_tbl)   # expected: N = 110, H = 34.199, p = 1.798e-07
+
+kw_p_txt <- ifelse(kw$p.value < 0.0001, "< 0.0001", paste0("= ", signif(kw$p.value, 2)))
+kw_label <- paste0("Kruskal\u2013Wallis: H = ", sprintf("%.3f", kw_tbl$H),
+                   ", p ", kw_p_txt, ", N = ", kw_tbl$N)
+
+# x-axis labels with n
+x_labels <- setNames(paste0(summary_tbl$Group, "\n(n = ", summary_tbl$n, ")"),
+                     as.character(summary_tbl$Group))
+
+# ---- Dunn post hoc (Holm), keep significant pairs only ---------------------
+dunn_sig <- baff_data %>%
+  dunn_test(BAFF_pg_ml ~ Group, p.adjust.method = "holm") %>%
+  filter(p.adj < 0.05)
+
+y_top <- max(baff_data$BAFF_pg_ml)
+
+# Bracket positions are built by hand because the y-axis is log10
+# (stacked in multiples, narrow brackets lowest, no gaps from hidden "ns" pairs)
+brackets <- dunn_sig %>%
+  mutate(x1 = match(group1, grp_levels),
+         x2 = match(group2, grp_levels),
+         span = abs(x2 - x1)) %>%
+  arrange(span, pmin(x1, x2)) %>%
+  mutate(y   = y_top * 1.25 * 1.4^(row_number() - 1),
+         tip = y / 1.08,
+         xm  = (x1 + x2) / 2,
+         label = p.adj.signif)
+
+# ---- Plot ------------------------------------------------------------------
+baff_plot <- ggplot(baff_data, aes(x = Group, y = BAFF_pg_ml, fill = Group)) +
+  geom_violin(trim = TRUE, scale = "width", width = 0.9, alpha = 0.30, color = NA) +
+  geom_boxplot(width = 0.22, outlier.shape = NA, fill = "white", alpha = 0.9,
+               color = "black", linewidth = 0.7) +
+  geom_point(position = position_jitter(width = 0.09, height = 0, seed = 42),
+             shape = 21, color = "white", stroke = 0.6, size = 3, alpha = 0.95,
+             show.legend = FALSE) +
+  scale_fill_manual(values = grp_cols) +
+  scale_x_discrete(labels = x_labels) +
+  scale_y_log10(breaks = c(100, 300, 1000, 3000, 10000),
+                labels = label_comma(),
+                expand = expansion(mult = c(0.03, 0.10))) +
+  coord_cartesian(clip = "off") +
+  labs(title = "Serum BAFF levels across groups",
+       subtitle = paste0(kw_label, "\nDunn post hoc test, Holm-adjusted"),
+       x = NULL, y = "BAFF concentration (pg/mL, log scale)") +
+  theme_classic(base_size = 16) +
+  theme(legend.position = "none",
+        plot.title      = element_text(size = 22, face = "bold", hjust = 0.5),
+        plot.subtitle   = element_text(size = 12, hjust = 0.5, color = "grey30", lineheight = 1.2,
+                                       margin = margin(b = 12)),
+        axis.title.y    = element_text(size = 16, margin = margin(r = 10)),
+        axis.text       = element_text(size = 14, color = "black"),
+        axis.line       = element_line(linewidth = 0.9),
+        axis.ticks      = element_line(linewidth = 0.9),
+        panel.grid.major.y = element_line(color = "grey90", linewidth = 0.4),
+        plot.margin     = margin(15, 25, 15, 15))
+
+if (nrow(brackets) > 0) {
+  baff_plot <- baff_plot +
+    geom_segment(data = brackets, aes(x = x1, xend = x2, y = y, yend = y),
+                 inherit.aes = FALSE, linewidth = 0.7) +
+    geom_segment(data = brackets, aes(x = x1, xend = x1, y = tip, yend = y),
+                 inherit.aes = FALSE, linewidth = 0.7) +
+    geom_segment(data = brackets, aes(x = x2, xend = x2, y = tip, yend = y),
+                 inherit.aes = FALSE, linewidth = 0.7) +
+    geom_text(data = brackets, aes(x = xm, y = y, label = label),
+              inherit.aes = FALSE, vjust = 0.15, size = 7)
+}
+
+print(baff_plot)
+
+ggsave("BAFF_violin_boxplot_jitter_significance.png", baff_plot,
+       width = 8, height = 7, dpi = 300, bg = "white")
+ggsave("BAFF_violin_boxplot_jitter_significance.jpg", baff_plot,
+       width = 8, height = 7, dpi = 300, bg = "white")
